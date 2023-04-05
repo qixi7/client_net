@@ -1,9 +1,8 @@
 using System;
 using System.IO;
+using Public.Log;
 using System.Net.Sockets;
 using System.Threading;
-using Public.Log;
-//using UnityEngine;
 
 /***
 		RDP - Redundant Data Protocol
@@ -26,14 +25,14 @@ using Public.Log;
 	[协议头(1字节) + 包类型(1字节) + ack(4位) + ackBit(4位)]
 */
 
-namespace Public.Net.RDP
+namespace NetModule.RDP
 {
 	public class RdpStream : Stream
 	{
-		private const int QueueSize = 64;
+		private const int QueueSize = 256;
 
 		private const int MaxLoadSize = 300;
-
+		private const int RedundantNum = 3;	// 冗余包数
 		private readonly bool _ownsSocket;
 
 		private readonly Socket _socket;
@@ -58,6 +57,9 @@ namespace Public.Net.RDP
 
 		private volatile bool _sent;
 		private const bool _DebugLog = false;
+		private const bool _SendRecvLog = false;
+		private const bool _AckLog = false;
+		private const bool _QueueLog = false;
 
 		public override int WriteTimeout
 		{
@@ -97,45 +99,40 @@ namespace Public.Net.RDP
 					Kind = PacketKind.Dial
 				}.WriteTo(sendBuf));
 				using (new Timer(delegate
-				{
-					if (!Monitor.TryEnter(sendBuf))
-					{
-						return;
-					}
-					try
-					{
-						SendPacket(sendBuf);
-						_RdpDebugLog("send RDP dial buffer.");
-					}
-					catch (Exception exception)
-					{
-//						Debug.LogException(exception);
-					}
-					finally
-					{
-						Monitor.Exit(sendBuf);
-					}
-				}, null, 0, 50))
-				{
+				       {
+					       try
+					       {
+						       SendPacket(sendBuf);
+						       _RdpDebugLog("send RDP dial buffer.");
+					       }
+					       catch (Exception exception)
+					       {
+						       LogHelper.ErrorF("send RDP dial err={0}", exception);
+					       }
+				       }, null, 0, 50))
+			
 					// wait for handshake.
 					while (true)
 					{
-						int num = socket.Receive(recvBuf.BaseArray, recvBuf.From, recvBuf.Length, SocketFlags.None);
-						num = Datagram.Open(recvBuf.BaseArray, num);
-						if (num >= 1)
+						int byteSize = socket.Receive(recvBuf.BaseArray, recvBuf.From, recvBuf.Length, SocketFlags.None);
+						byteSize = Datagram.Open(recvBuf.BaseArray, byteSize);
+						if (byteSize >= 1)
 						{
 							PacketHeader packetHeader = default;
-							num = packetHeader.ReadFrom(recvBuf.Cut(0, num));
+							byteSize = packetHeader.ReadFrom(recvBuf.Cut(0, byteSize));
 							_RdpDebugLog("ReadFrom PacketKind={0}.",packetHeader.Kind.ToString());
-							if (num > 0 && packetHeader.Kind == PacketKind.DialAck)
+							if (byteSize > 0 && packetHeader.Kind == PacketKind.DialAck)
 							{
 								break;
 							}
 						}
 					}
-					_RdpDebugLog("begin Resend.");
-					_resendTimer = new Timer(Resend, null, 10, 10);
-				}
+				_RdpDebugLog("begin RunSend.");
+				_resendTimer = new Timer(RunSend, null, 10, 10);
+			}
+			catch (Exception e)
+			{
+				LogHelper.ErrorF("NewRdpStream err={0}", e);
 			}
 			finally
 			{
@@ -144,7 +141,7 @@ namespace Public.Net.RDP
 			}
 		}
 
-		private void Resend(object _)
+		private void RunSend(object _)
 		{
 			if (_sent)
 			{
@@ -159,78 +156,108 @@ namespace Public.Net.RDP
 			{
 				FlushInternal();
 			}
+			catch (Exception e)
+			{
+				LogHelper.ErrorF("RunSend err={0}", e);
+			}
 			finally
 			{
 				Monitor.Exit(_writeMutex);
 			}
 		}
 
+		// 对UDP来说, 并不知道一次Read能读多少count, 所以先不用这个count
 		public override int Read(byte[] buffer, int offset, int count)
 		{
 			if (_closed)
 			{
 				throw new ObjectDisposedException("RdpStream");
 			}
-			Slice<byte> b = Slice<byte>.Make(buffer, offset, offset + count);
+			Slice<byte> readBuf = Slice<byte>.Make(buffer, offset);
 			object readMutex = _readMutex;
-			int result;
+			int readCount = 0;
 			lock (readMutex)
 			{
-				bool flag = false;
+				bool recvAny = false;
 				while (true)
 				{
+					if (_closed)
+					{
+						throw new ObjectDisposedException("RdpStream closed"); 
+					}
 					PacketLoad packetLoad = default;
 					if (_recv.Read(ref packetLoad))
 					{
 						try
 						{
 							SendAck();
-							result = packetLoad.Buffer.CopyTo(b);
+							// 把packetLoad copy 到 b[readCount:]
+							packetLoad.Buffer.CopyTo(readBuf.Cut(readCount));
+							readCount += packetLoad.Size;
+							// 判断是否分包
+							if (packetLoad.SubPacket)
+							{
+								// LogHelper.InfoF("SubPacket wait.");
+								continue;
+							}
+							// LogHelper.InfoF("Final Packet arrive.");
 							break;
+						}
+						catch (Exception e)
+						{
+							LogHelper.ErrorF("Read err={0}", e);
 						}
 						finally
 						{
 							BufferPool.Put(packetLoad.Buffer.BaseArray);
 						}
 					}
-					if (flag)
+					// 写到这里是为了保证只SendAck一次, 上面Read后也会SendAck
+					if (recvAny)
 					{
 						SendAck();
 					}
-					flag = TransferToQueue();
+					recvAny = TransferToQueue();
 				}
 			}
-			return result;
+			return readCount;
 		}
 
 		private bool TransferToQueue()
 		{
 			byte[] array = BufferPool.Get();
-			bool result;
+			bool result = false;
 			try
 			{
-				int num;
+				int byteSize;
 				Slice<byte> data;
 				while (true)
 				{
-					int size = _socket.Receive(array);
-
-					num = Datagram.Open(array, size);
-					if (num > 0)
+					if (_closed)
 					{
-						data = Slice<byte>.Make(array, 0, num);
-						_RdpDebugLog("TransferToQueue data Read. to={0}.", num);
+						return false;
+					}
+
+					int size = _socket.Receive(array);
+					byteSize = Datagram.Open(array, size);
+					if (byteSize > 0)
+					{
+						data = Slice<byte>.Make(array, 0, byteSize);
+						_RdpDebugLog("TransferToQueue data Read. binLen={0}.", byteSize);
 						if (_DebugLog)
 						{
+							var binStr = ""; 
 							for (int i = 0; i < data.Length; i++)
 							{
-								_RdpDebugLog("{0}", data.Get(i));
+								binStr += data.Get(i).ToString();
+								binStr += ", ";
 							}
+							_RdpDebugLog("data={0}", binStr);
 						}
 						_RdpDebugLog("TransferToQueue data Read end.");
 						PacketHeader packetHeader = default;
-						num = packetHeader.ReadFrom(data);
-						if (num > 0)
+						byteSize = packetHeader.ReadFrom(data);
+						if (byteSize > 0)
 						{
 							PacketKind kind = packetHeader.Kind;
 							if (kind == PacketKind.Data)
@@ -247,13 +274,15 @@ namespace Public.Net.RDP
 						}
 					}
 				}
-
-				data = data.Cut(num);
+			
+				// 取body
+				data = data.Cut(byteSize);
+				var recvPack = "Recv Pack: [";
 				while (true)
 				{
 					PacketLoad packet = new PacketLoad {Buffer = Slice<byte>.Make(BufferPool.Get())};
-					int n = packet.ReadFrom(data);
-					if (n==0)
+					byteSize = packet.ReadFrom(data);
+					if (byteSize == 0)
 					{
 						packet.Free();
 						break;
@@ -261,11 +290,23 @@ namespace Public.Net.RDP
 					if (_recv.Set(packet))
 					{
 						_RdpDebugLog("_recv Set ok. seq={0}, n={1}, data.len={2}, packet.Size={3}, buffer.len={4}",
-							packet.Seq, n,data.Length, packet.Size, packet.Buffer.Length);
+							packet.Seq, byteSize, data.Length, packet.Size, packet.Buffer.Length);
 					}
-					data = data.Cut(n);
+					data = data.Cut(byteSize);
+				
+					recvPack += packet.Seq.ToString();
+					recvPack += ", ";
 				}
+				recvPack += "]";
+				_RdpSendRecvLog(recvPack);
 				result = true;
+			}
+			catch (Exception e)
+			{
+				if (!_closed)
+				{
+					LogHelper.ErrorF("Transfer to queue err={0}", e);					
+				}
 			}
 			finally
 			{
@@ -288,7 +329,11 @@ namespace Public.Net.RDP
 				packetHeader.Kind = PacketKind.Ack;
 				slice = slice.Cut(0, packetHeader.WriteTo(slice));
 				SendPacket(slice);
-				_RdpDebugLog("SendAck {0}", ack);
+				_RdpAckLog("Send Recv Ack {0}", ack);
+			}
+			catch (Exception e)
+			{
+				LogHelper.ErrorF("SendAck err={0}", e);
 			}
 			finally
 			{
@@ -298,109 +343,151 @@ namespace Public.Net.RDP
 
 		public override void Write(byte[] buffer, int offset, int count)
 		{
+			int mss = MaxLoadSize;
+			int allCount = count;
+			int nowOffset = offset;
+			object writeMutex = _writeMutex;
+			lock (writeMutex)
+			{
+				while (allCount > mss)
+				{
+					WriteOne(buffer, nowOffset, mss, allCount-mss > 0);
+					nowOffset += mss;
+					allCount -= mss;
+				}
+				if (allCount > 0)
+				{
+					WriteOne(buffer, nowOffset, allCount, false);
+				}
+			}
+		}
+
+		public void WriteOne(byte[] buffer, int offset, int count, bool subPacket)
+		{
 			if (_closed)
 			{
-				throw new ObjectDisposedException("RdpStream");
+				throw new ObjectDisposedException("RdpStream Write Close");
 			}
 			if (count > MaxLoadSize)
 			{
 				throw new ArgumentOutOfRangeException(nameof(count), "MTU exceeded");
 			}
-			Slice<byte> slice = Slice<byte>.Make(buffer, offset, offset + count);
-			object writeMutex = _writeMutex;
-			lock (writeMutex)
+			Slice<byte> srcBuff = Slice<byte>.Make(buffer, offset, offset + count);
+			int writeTimeout = WriteTimeout;
+			long nowMs = Connection.NowMillis();
+			Slice<byte> loadBuf = Slice<byte>.Make(BufferPool.Get());
+			try
 			{
-				int writeTimeout = WriteTimeout;
-				long nowMs = Connection.NowMillis();
-				Slice<byte> slice2 = Slice<byte>.Make(BufferPool.Get());
+				PacketLoad load = new PacketLoad
+				{
+					Seq = _seq,
+					Size = count,
+					SubPacket = subPacket,
+					Buffer = Slice<byte>.Make(BufferPool.Get())
+				};
+				long nowTimestamp = Connection.NowMillis();
+				load.Buffer = load.Buffer.Cut(0, srcBuff.CopyTo(load.Buffer));
+				load.Timestamp = nowTimestamp;
+				while (!_send.Write(load))
+				{
+					if (Connection.NowMillis() > nowMs + writeTimeout)
+					{
+						throw new TimeoutException("RDP Write Timeout");
+					}
+					if (Monitor.TryEnter(_readMutex))
+					{
+						try
+						{
+							TransferToQueue();
+						}
+						catch (Exception e)
+						{
+							LogHelper.ErrorF("Write 1 err={0}", e);
+						}
+						finally
+						{
+							Monitor.Exit(_readMutex);
+						}
+					}
+					FlushInternal();
+					_writeBlockEvent.WaitOne(100);
+					if (_closed)
+					{
+						throw new ObjectDisposedException("RdpStream closed");
+					}
+				}
+				int sendSize = new PacketHeader
+				{
+					Kind = PacketKind.Data
+				}.WriteTo(loadBuf);
+				sendSize += load.WriteTo(loadBuf.Cut(sendSize));
+				PacketLoad tmpPacket = default;
+			
+				var sendPackStr = "Normal Send Pack [" + load.Seq;
+				for (uint i = 0; i < RedundantNum; i++)
+				{
+					if (!_send.Get(i, ref tmpPacket))
+					{
+						continue;
+					}
+					if (!Datagram.After(load.Seq, tmpPacket.Seq))
+					{
+						break;
+					}
+					if (sendSize + PacketLoad.Overhead + tmpPacket.Size + Datagram.CheckSumSize > Datagram.Mtu)
+					{
+						break;
+					}
+					sendSize += tmpPacket.WriteTo(loadBuf.Cut(sendSize));
+					// 冗余packetLoad.Seq
+					sendPackStr += ", ";
+					sendPackStr += tmpPacket.Seq.ToString();
+				}
+				sendPackStr += "]";
+				_RdpSendRecvLog(sendPackStr);
+			
+				loadBuf = loadBuf.Cut(0, sendSize);
 				try
 				{
-					PacketLoad load = new PacketLoad
-					{
-						Seq = _seq,
-						Size = count,
-						Buffer = Slice<byte>.Make(BufferPool.Get())
-					};
-					long nowTimestamp = Connection.Now();
-					load.Buffer = load.Buffer.Cut(0, slice.CopyTo(load.Buffer));
-					load.Timestamp = nowTimestamp;
-					while (!_send.Write(load))
-					{
-						if (Connection.NowMillis() > nowMs + writeTimeout)
-						{
-							throw new TimeoutException("RDP Write");
-						}
-						if (Monitor.TryEnter(_readMutex))
-						{
-							try
-							{
-								TransferToQueue();
-							}
-							finally
-							{
-								Monitor.Exit(_readMutex);
-							}
-						}
-						FlushInternal();
-						_writeBlockEvent.WaitOne(100);
-						if (_closed)
-						{
-							throw new ObjectDisposedException("RdpStream");
-						}
-					}
-					int headerLen = new PacketHeader
-					{
-						Kind = PacketKind.Data
-					}.WriteTo(slice2);
-					headerLen += load.WriteTo(slice2.Cut(headerLen));
-					long minRTT = _window.Min();
-					PacketLoad packetLoad = default;
-					for (uint i = 1; i <= 3; i++)
-					{
-						if (_send.Get(i, ref packetLoad))
-						{
-							if (!Datagram.SeqSign(packetLoad.Seq - load.Seq) || headerLen + 6 + packetLoad.Size + 4 > Datagram.Mtu)
-							{
-								break;
-							}
-							if (nowTimestamp - packetLoad.Timestamp >= minRTT)
-							{
-								headerLen += packetLoad.WriteTo(slice2.Cut(headerLen));
-							}
-						}
-					}
-					slice2 = slice2.Cut(0, headerLen);
-					try
-					{
-						SendPacket(slice2);
-					}
-					catch (Exception)
-					{
-						_send.Clear(_seq);
-						throw;
-					}
+					SendPacket(loadBuf);
 				}
-				finally
+				catch (Exception e)
 				{
-					BufferPool.Put(slice2.BaseArray);
+					LogHelper.ErrorF("Write 2 err={0}", e);
+					_send.Clear(_seq);
+					throw;
 				}
-				_seq++;
 			}
+			catch (Exception e)
+			{
+				LogHelper.ErrorF("Stream Write err={0}", e);
+			}
+			finally
+			{
+				BufferPool.Put(loadBuf.BaseArray);
+			}
+			_seq++;
 		}
 
 		private void SendPacket(Slice<byte> packet)
 		{
 			if (!Datagram.Seal(packet.BaseArray, packet.Length))
 			{
+				LogHelper.ErrorF("SendPacket err! BaseArray.Len={0}, packet.Length={1}",
+					packet.BaseArray.Length, packet.Length);
 				return;
 			}
-			int size = packet.Length + 4;
+			int size = packet.Length + Datagram.CheckSumSize;
 			try
 			{
+				// 如果连接凉凉了, 就不要再发了
 				_socket.Send(packet.BaseArray, packet.From, size, SocketFlags.None);
 			}
-			catch (Exception)
+			catch (Exception e)
 			{
+				LogHelper.ErrorF("Send Rdp data err={0}", e);
+				Close();
+				return;
 			}
 			_sent = true;
 		}
@@ -430,35 +517,44 @@ namespace Public.Net.RDP
 			Slice<byte> slice = Slice<byte>.Make(BufferPool.Get());
 			try
 			{
-				int num = new PacketHeader
+				int sendSize = new PacketHeader
 				{
 					Kind = PacketKind.Data
 				}.WriteTo(slice);
 				bool flag = false;
-				long num2 = Connection.Now();
-				long num3 = _window.Min();
 				PacketLoad packetLoad = default;
-				for (uint num4 = 0; num4 < QueueSize; num4++)
+				var sendPackStr = "Flush Send Pack [";
+				for (uint i = 0; i < QueueSize; i++)
 				{
-					if (_send.Get(num4, ref packetLoad))
+					if (!_send.Get(i, ref packetLoad))
 					{
-						if (!Datagram.SeqSign(packetLoad.Seq - _seq) ||
-						    num + PacketLoad.Overhead + packetLoad.Size + Datagram.Overhead > Datagram.Mtu)
-						{
-							break;
-						}
-						if (num2 - packetLoad.Timestamp >= num3)
-						{
-							num += packetLoad.WriteTo(slice.Cut(num));
-							flag = true;
-						}
+						continue;
 					}
+					if (!Datagram.After(_seq, packetLoad.Seq))
+					{
+						break;
+					}
+					if (sendSize + PacketLoad.Overhead + packetLoad.Size + Datagram.CheckSumSize > Datagram.Mtu)
+					{
+						break;
+					}
+					sendSize += packetLoad.WriteTo(slice.Cut(sendSize));
+					flag = true;
+					sendPackStr += packetLoad.Seq.ToString();
+					sendPackStr += ", ";
 				}
 				if (flag)
 				{
-					slice = slice.Cut(0, num);
+					slice = slice.Cut(0, sendSize);
 					SendPacket(slice);
+				
+					sendPackStr += "]";
+					_RdpSendRecvLog(sendPackStr);
 				}
+			}
+			catch (Exception e)
+			{
+				LogHelper.ErrorF("Flush err={0}", e);
 			}
 			finally
 			{
@@ -479,6 +575,30 @@ namespace Public.Net.RDP
 		public static void _RdpDebugLog(string format, params object[] arg)
 		{
 			if (_DebugLog)
+			{
+				LogHelper.DebugF(format,arg);
+			}
+		}
+	
+		public static void _RdpSendRecvLog(string format, params object[] arg)
+		{
+			if (_SendRecvLog)
+			{
+				LogHelper.DebugF(format,arg);
+			}
+		}
+		
+		public static void _RdpAckLog(string format, params object[] arg)
+		{
+			if (_AckLog)
+			{
+				LogHelper.DebugF(format,arg);
+			}
+		}
+		
+		public static void _RdpQueLog(string format, params object[] arg)
+		{
+			if (_QueueLog)
 			{
 				LogHelper.DebugF(format,arg);
 			}

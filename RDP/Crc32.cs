@@ -8,9 +8,10 @@ namespace Public.Net.RDP
 		// Predefined polynomials.
 		// IEEE is by far and away the most common CRC-32 polynomial.
 		// Used by ethernet (IEEE 802.3), v.42, fddi, gzip, zip, png, ...
-		private const uint Polyrev = 3988292384u;
+		private const uint Polyrev = 3988292384u;	// 0xedb88320 IEEE标准
 
-		private static readonly uint[] Table = new uint[256];
+		private const int TableLen = 256;
+		private static readonly uint[] Table = new uint[TableLen];
 
 		private static bool _initialized;
 
@@ -26,12 +27,12 @@ namespace Public.Net.RDP
 					Initialize();
 				}
 			}
-			uint num = ~prevCrc;
+			uint crcHash = ~prevCrc;
 			foreach (byte current in data)
 			{
-				num = num >> 8 ^ Table[(byte)num ^ current];
+				crcHash = crcHash >> 8 ^ Table[(byte)crcHash ^ current];
 			}
-			return ~num;
+			return ~crcHash;
 		}
 
 		private static void Initialize()
@@ -40,21 +41,21 @@ namespace Public.Net.RDP
 			{
 				return;
 			}
-			for (uint num = 0u; num < 256u; num += 1u)
+			for (uint i = 0u; i < TableLen; i += 1u)
 			{
-				uint num2 = num;
-				for (int i = 0; i < 8; i++)
+				uint tmpHash = i;
+				for (int j = 0; j < 8; j++)
 				{
-					if ((num2 & 1u) != 0u)
+					if ((tmpHash & 1u) != 0u)
 					{
-						num2 = num2 >> 1 ^ Polyrev;
+						tmpHash = tmpHash >> 1 ^ Polyrev;
 					}
 					else
 					{
-						num2 >>= 1;
+						tmpHash >>= 1;
 					}
 				}
-				Table[(int)(UIntPtr)num] = num2;
+				Table[(int)(UIntPtr)i] = tmpHash;
 			}
 			_initialized = true;
 		}

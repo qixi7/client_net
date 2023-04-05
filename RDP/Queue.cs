@@ -1,6 +1,3 @@
-using System;
-using Public.Log;
-
 namespace Public.Net.RDP
 {
 	internal class Queue : ISendQueue, IRecvQueue
@@ -25,9 +22,9 @@ namespace Public.Net.RDP
 			bool result;
 			lock (mutex)
 			{
-				uint num = _seq - 1u + offset;
-				Packet packet = _packets[num % _size];
-				if (!packet.Known || packet.Load.Seq != num)
+				uint seq = _seq + offset;
+				Packet packet = _packets[seq % _size];
+				if (!packet.Known || packet.Load.Seq != seq)
 				{
 					result = false;
 				}
@@ -51,8 +48,8 @@ namespace Public.Net.RDP
 
 		private bool ClearInternal(uint seq, Window w = null)
 		{
-			uint num = seq % _size;
-			Packet packet = _packets[num];
+			uint index = seq % _size;
+			Packet packet = _packets[index];
 			if (!packet.Known || packet.Load.Seq != seq)
 			{
 				return false;
@@ -63,7 +60,8 @@ namespace Public.Net.RDP
 				w.Append(Connection.Now() - packet.Load.Timestamp);
 			}
 			packet.Load.Free();
-			_packets[num] = packet;
+			_packets[index] = packet;
+			// RdpStream._RdpSendRecvLog("Ack Send Seq={0}", seq);
 			return true;
 		}
 
@@ -72,15 +70,15 @@ namespace Public.Net.RDP
 			object mutex = _mutex;
 			lock (mutex)
 			{
-				uint num = load.Seq % _size;
-				Packet packet = _packets[num];
+				uint index = load.Seq % _size;
+				Packet packet = _packets[index];
 				if (packet.Known)
 				{
 					return packet.Load.Seq == load.Seq;
 				}
 				packet.Load = load;
 				packet.Known = true;
-				_packets[num] = packet;
+				_packets[index] = packet;
 			}
 			return true;
 		}
@@ -88,10 +86,9 @@ namespace Public.Net.RDP
 		public int Ack(uint ack, uint ackBits, Window w)
 		{
 			object mutex = _mutex;
-			int result = 0;
+			int ackNum = 0;
 			lock (mutex)
 			{
-				int num = 0;
 				// drop the data out of cache.
 				if (ack - _seq <= _size)
 				{
@@ -100,7 +97,7 @@ namespace Public.Net.RDP
 					{
 						if (ClearInternal(_seq, w))
 						{
-							num++;
+							ackNum++;
 						}
 						_seq++;
 					}
@@ -110,15 +107,14 @@ namespace Public.Net.RDP
 					{
 						if ((ackBits & 1) > 0 && ClearInternal(ack + nextAckIndex, w))
 						{
-							num++;
+							ackNum++;
 						}
 						ackBits >>= 1;
 						nextAckIndex++;
 					}
-					result = num;
 				}
 			}
-			return result;
+			return ackNum;
 		}
 
 		public bool Set(PacketLoad load)
@@ -130,24 +126,36 @@ namespace Public.Net.RDP
 				if (load.Seq - _seq > _size)
 				{
 					result = false;
-					RdpStream._RdpDebugLog("Set func. load.Seq={0}, _seq={1}, _size={2}",
-						load.Seq, _seq, _size);
+					RdpStream._RdpQueLog("Set load err _seq={0}. load.Seq={1}, _size={2}",
+						_seq, load.Seq, _size);
 				}
 				else
 				{
-					uint num = load.Seq % _size;
-					Packet packet = _packets[(int)num];
+					uint index = load.Seq % _size;
+					Packet packet = _packets[(int)index];
 					if (packet.Known)
 					{
 						result = false;
-						RdpStream._RdpDebugLog("Set func. load.Seq={0}, packet.Known.", load.Seq);
+						RdpStream._RdpQueLog("Set load err _seq={0}. load.Seq={1}, packet.Known. packet.Seq={2}",
+							_seq, load.Seq, packet.Load.Seq);
+						if (load.Seq == _seq)
+						{
+							// 这个包更重要! 替换掉
+							packet.Load = load;
+							_packets[(int)index] = packet;
+							result = true;
+							RdpStream._RdpQueLog("Set Replace load ok _seq={0}. load.Seq={1}",
+								_seq, load.Seq);
+						}
 					}
 					else
 					{
 						packet.Load = load;
 						packet.Known = true;
-						_packets[(int)num] = packet;
+						_packets[(int)index] = packet;
 						result = true;
+						RdpStream._RdpQueLog("Set load ok _seq={0}. load.Seq={1}",
+							_seq, load.Seq);
 					}
 				}
 			}
@@ -160,18 +168,23 @@ namespace Public.Net.RDP
 			bool result;
 			lock (mutex)
 			{
-				uint num = _seq % _size;
-				Packet packet = _packets[(int)num];
+				uint index = _seq % _size;
+				Packet packet = _packets[(int)index];
 				if (!packet.Known || packet.Load.Seq != _seq)
 				{
 					result = false;
+					if (packet.Load.Seq != 0)
+					{
+						RdpStream._RdpQueLog("Read queue err! _seq={0}, Known={1}, packet.seq={2}",
+							_seq, packet.Known, packet.Load.Seq);						
+					}
 				}
 				else
 				{
 					packet.Known = false;
 					load = packet.Load;
 					packet.Load = default;
-					_packets[(int)num] = packet;
+					_packets[(int)index] = packet;
 					_seq += 1u;
 					result = true;
 				}

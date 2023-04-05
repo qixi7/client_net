@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using Public.Log;
 
 namespace Public.Net.RDP
 {
@@ -19,6 +21,10 @@ namespace Public.Net.RDP
 					return Pool.Pop();
 				}
 			}
+			catch (Exception e)
+			{
+				LogHelper.ErrorF("BufferPool Get err={0}", e);
+			}
 			finally
 			{
 				if (flag)
@@ -26,6 +32,7 @@ namespace Public.Net.RDP
 					_mutex.Exit();
 				}
 			}
+
 			return new byte[Datagram.Mtu];
 		}
 
@@ -36,6 +43,10 @@ namespace Public.Net.RDP
 			{
 				_mutex.Enter(ref flag);
 				Pool.Push(buf);
+			}
+			catch (Exception e)
+			{
+				LogHelper.ErrorF("BufferPool Put err={0}", e);
 			}
 			finally
 			{

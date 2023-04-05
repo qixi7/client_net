@@ -1,5 +1,3 @@
-using System;
-
 namespace Public.Net.RDP
 {
 	internal struct PacketHeader
@@ -12,6 +10,7 @@ namespace Public.Net.RDP
 
 		public int ReadFrom(Slice<byte> data)
 		{
+			// 第1位=协议ID, 第2位=包类型
 			if (data.Length < 2)
 			{
 				return 0;
@@ -21,18 +20,19 @@ namespace Public.Net.RDP
 				return 0;
 			}
 			Kind = (PacketKind)data.Get(1);
-			int num = 2;
+			int size = 2;
 			if (Kind == PacketKind.Ack)
 			{
+				// ack包: 3-6位=Ack, 7-10位=selectAck
 				if (data.Length < 10)
 				{
 					return 0;
 				}
 				Ack = BigEndian.ToUInt32(data.Cut(2, 6));
 				AckBits = BigEndian.ToUInt32(data.Cut(6, 10));
-				num += 8;
+				size += 8;
 			}
-			return num;
+			return size;
 		}
 
 		public int WriteTo(Slice<byte> data)
@@ -43,7 +43,7 @@ namespace Public.Net.RDP
 			}
 			data.Set(0, Datagram.ProtocolID);
 			data.Set(1, (byte)Kind);
-			int num = 2;
+			int size = 2;
 			PacketKind kind = Kind;
 			if (kind == PacketKind.Ack)
 			{
@@ -53,9 +53,9 @@ namespace Public.Net.RDP
 				}
 				BigEndian.PutBytes(data.Cut(2, 6), Ack);
 				BigEndian.PutBytes(data.Cut(6, 10), AckBits);
-				num += 8;
+				size += 8;
 			}
-			return num;
+			return size;
 		}
 	}
 }
