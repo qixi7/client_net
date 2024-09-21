@@ -2,7 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 
-namespace Public.Net
+namespace NetModule
 {
 	public struct Slice<T> : IEnumerable<T>
 	{
@@ -98,20 +98,20 @@ namespace Public.Net
 			{
 				throw new ArgumentNullException(nameof(baseArray));
 			}
-			int num = baseArray.Length;
+			int arrLen = baseArray.Length;
 			if (from < 0)
 			{
-				from += num;
+				from += arrLen;
 			}
-			if (from < 0 || from > num)
+			if (from < 0 || from > arrLen)
 			{
 				throw new IndexOutOfRangeException();
 			}
 			if (to < 0)
 			{
-				to += num;
+				to += arrLen;
 			}
-			if (to < 0 || to > num)
+			if (to < 0 || to > arrLen)
 			{
 				throw new IndexOutOfRangeException();
 			}
@@ -126,12 +126,18 @@ namespace Public.Net
 				To = to
 			};
 		}
+        
+        public void Reset()
+        {
+            From = 0;
+            To = BaseArray.Length;
+        }
 
 		public int CopyTo(Slice<T> b)
 		{
-			int num = Math.Min(Length, b.Length);
-			Array.Copy(BaseArray, From, b.BaseArray, b.From, num);
-			return num;
+			int minLen = Math.Min(Length, b.Length);
+			Array.Copy(BaseArray, From, b.BaseArray, b.From, minLen);
+			return minLen;
 		}
 
 		public Slice<T> Cut(int from)

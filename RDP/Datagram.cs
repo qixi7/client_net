@@ -1,4 +1,4 @@
-namespace Public.Net.RDP
+namespace NetModule.RDP
 {
     internal static class Datagram
     {

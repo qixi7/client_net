@@ -1,56 +1,45 @@
-
-
-namespace Public.Net
+namespace NetModule
 {
 	public class ProtocolReader : System.IDisposable
 	{
 		private readonly System.IO.Stream _stream;
-
 		private readonly bool _leaveOpen;
+		private bool DataMode;	// 是否UDP数据包模式
 
-		private readonly byte[] _buf;
-
-		private readonly Slice<byte> _bufSlice;
-
-		public ProtocolReader(System.IO.Stream baseStream, bool leaveOpen = false)
+		public ProtocolReader(System.IO.Stream baseStream, bool dataMode, bool leaveOpen = false)
 		{
 			_stream = baseStream;
 			_leaveOpen = leaveOpen;
-			_buf = new byte[8];
-			_bufSlice = Slice<byte>.Make(_buf);
+			DataMode = dataMode;
 		}
-
-		public void Read(byte[] buffer, int offset, int count)
+		
+		public int Read(byte[] buffer, int offset, int count)
 		{
-			for (int i = 0; i < count; i += _stream.Read(buffer, offset + i, count - i))
+			int bodySize;
+			if (IsDataMode())
 			{
+				bodySize = _stream.Read(buffer, offset, count);
 			}
+			else
+			{
+				for (int i = 0; i < count; i += _stream.Read(buffer, offset + i, count - i)) { }
+				bodySize = count;
+			}
+		
+			return bodySize;
 		}
-
-		public byte ReadByte()
-		{
-			Read(_buf, 0, 1);
-			return _buf[0];
-		}
-
-		public ushort ReadUInt16()
-		{
-			Read(_buf, 0, 2);
-			return BigEndian.ToUInt16(_bufSlice);
-		}
-
-		public uint ReadUInt32()
-		{
-			Read(_buf, 0, 4);
-			return BigEndian.ToUInt32(_bufSlice);
-		}
-
+		
 		public void Dispose()
 		{
 			if (_stream != null && !_leaveOpen)
 			{
 				_stream.Dispose();
 			}
+		}
+
+		public bool IsDataMode()
+		{
+			return DataMode;
 		}
 	}
 }

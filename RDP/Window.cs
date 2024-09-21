@@ -1,6 +1,6 @@
 using System;
 
-namespace Public.Net.RDP
+namespace NetModule.RDP
 {
 	internal class Window
 	{
@@ -13,6 +13,7 @@ namespace Public.Net.RDP
 		private int _n;
 
 		private long _min;
+		private long _minHistory;
 
 		public void Append(long value)
 		{
@@ -34,7 +35,12 @@ namespace Public.Net.RDP
 			{
 				_min = -1L;
 			}
-		}
+
+            if (_minHistory == 0 || _minHistory < value)
+            {
+                _minHistory = value;
+            }
+        }
 
 		public long Min()
 		{
@@ -52,5 +58,11 @@ namespace Public.Net.RDP
 			}
 			return _min;
 		}
+        
+        // 历史最低RTT
+        public long HistoryMin()
+        {
+            return _minHistory;
+        }
 	}
 }

@@ -1,7 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 
-namespace Public.Log
+namespace NetModule.Log
 {
     public class LogHelper
     {
@@ -37,8 +36,8 @@ namespace Public.Log
             {
                 return;
             }
-//            UnityEngine.Debug.LogFormat(Level2Str[LevelEnum.Debug]+format, arg);
-//            Logs.Add(String.Format(Level2Str[LevelEnum.Debug]+format, arg));
+            // Logs.Add(String.Format(Level2Str[LevelEnum.Debug]+format, arg));
+            // UnityEngine.Debug.LogFormat(Level2Str[LevelEnum.Debug]+format, arg);
             Console.WriteLine(Level2Str[LevelEnum.Debug]+format, arg);
         }
 
@@ -48,9 +47,9 @@ namespace Public.Log
             {
                 return;
             }
+            // Logs.Add(String.Format(Level2Str[LevelEnum.Info]+format, arg));
+            // UnityEngine.Debug.LogFormat(Level2Str[LevelEnum.Info]+format, arg);
             Console.WriteLine(Level2Str[LevelEnum.Info]+format, arg);
-//            UnityEngine.Debug.LogFormat(Level2Str[LevelEnum.Info]+format, arg);
-//            Logs.Add(String.Format(Level2Str[LevelEnum.Info]+format, arg));
         }
 
         public static void WarnF(string format, params object[] arg)
@@ -59,9 +58,9 @@ namespace Public.Log
             {
                 return;
             }
+            // Logs.Add(String.Format(Level2Str[LevelEnum.Warn]+format, arg));
+            // UnityEngine.Debug.LogWarningFormat(Level2Str[LevelEnum.Warn]+format, arg);
             Console.WriteLine(Level2Str[LevelEnum.Warn]+format, arg);
-//            UnityEngine.Debug.LogWarningFormat(Level2Str[LevelEnum.Warn]+format, arg);
-//            Logs.Add(String.Format(Level2Str[LevelEnum.Warn]+format, arg));
         }
 
         public static void ErrorF(string format, params object[] arg)
@@ -70,9 +69,9 @@ namespace Public.Log
             {
                 return;
             }
+            // Logs.Add(String.Format(Level2Str[LevelEnum.Error]+format, arg));
+            // UnityEngine.Debug.LogErrorFormat(Level2Str[LevelEnum.Error]+format, arg);
             Console.WriteLine(Level2Str[LevelEnum.Error]+format, arg);
-//            UnityEngine.Debug.LogErrorFormat(Level2Str[LevelEnum.Error]+format, arg);
-//            Logs.Add(String.Format(Level2Str[LevelEnum.Error]+format, arg));
         }
     }
 }

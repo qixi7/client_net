@@ -1,69 +1,49 @@
 using System;
 using System.Net;
 
-namespace Public.Net
+namespace NetModule
 {
 	public class ConnectionParam
 	{
+		// 连接类型
 		public ConnectionType connType;
-
-		public int connectTimeout = 15000;	// default 15s
-
-		public int MaxSplitPackSize = 300;	// 单个数据包最大Size
-
-		public bool secure = false;	// default encryption. // todo.加密还未弄，暂且默认关闭
-
-		public int MaxPackSize = 2 * 1024 * 1024;	// 2M
-
-		public ushort heartMsgID = 1;	// heartMsgID or flag
-
+		// 连接超时时间. 单位: ms
+		public int ConnectTimeout = 15000;
+		// 单个数据包最大Size
+		public const int MaxPackSize = 2 * 1024 * 1024;	// 2M
+		// 心跳消息标记
+		public uint HeartMsgID = 1;
+		// 发心跳间隔
 		public int HeartTickTime = 1000;	// default 1s
-
+		// 心跳超时时间
 		public int HeartTickTimeout = 15000;	// default 15s
-
-		public bool LazyHeartbeat;	// for optimize heart. if you need, open it.
-
-		public string IP;
-
+		// 心跳优化: 若心跳周期内与服务器有成功的消息交互, 则本次不发心跳节省流量
+		public bool LazyHeartbeat;
+		// 服务器地址 & 端口
+		public string Addr;
 		public int Port;
-
+		public IPEndPoint RemoteEndPoint { get; private set; }
+		// 是否自动即时发送
 		public bool AutoFlush = true;
 
-		private string _cacheString;
-
-		public IPEndPoint RemoteEndPoint
+		public ConnectionParam(string addr, int port, ConnectionType type)
 		{
-			get;
-		}
-
-		public ConnectionParam(string ip, int port, ConnectionType type)
-		{
-			IP = ip;
+			Addr = addr;
 			Port = port;
-			IPAddress address;
-			if (!IPAddress.TryParse(ip, out address))
-			{
-				throw new Exception("Provided remoteIPAddress string was not succesfully parsed.");
-			}
-			RemoteEndPoint = new IPEndPoint(address, port);
 			connType = type;
-		}
-
-		public override string ToString()
-		{
-			if (_cacheString == null)
+			IPAddress address;
+			if (IPAddress.TryParse(Addr, out address))
 			{
-				_cacheString = string.Concat(new object[]
-				{
-					"[",
-					connType.ToString(),
-					"] ",
-					RemoteEndPoint.Address,
-					":",
-					RemoteEndPoint.Port.ToString()
-				});
+				RemoteEndPoint = new IPEndPoint(address, Port);
+				return;
 			}
-			return _cacheString;
+
+			var hostInfo = Dns.GetHostEntry(Addr);
+			if (hostInfo == null || hostInfo.AddressList.Length == 0)
+			{
+				throw new Exception("Provided remoteIPAddress string was not succesfully parsed.");				
+			}
+			RemoteEndPoint = new IPEndPoint(hostInfo.AddressList[0], Port);
 		}
 	}
 }

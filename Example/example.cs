@@ -1,11 +1,9 @@
 ﻿using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using System.Threading;
-using Public.Log;
-using Public.Net;
+using NetModule.Log;
 
-namespace Public.Net
+namespace NetModule
 {
     class Example
     {
@@ -15,7 +13,7 @@ namespace Public.Net
         private static void ConnectSuccessEvent(Connection conn)
         {
             LogHelper.DebugF("<Client> ConnectSuccessEvent with type={0}, ip={1}, port={2}",
-                conn.InitParam.connType.ToString(), conn.InitParam.IP, conn.InitParam.Port);
+                conn.InitParam.connType.ToString(), conn.InitParam.Addr, conn.InitParam.Port);
             GameNetPack pack = new GameNetPack();
             pack.msgID = 1001;
             pack.body = Encoding.UTF8.GetBytes("HelloWord!");
@@ -26,7 +24,7 @@ namespace Public.Net
         private static void ConnectFailedEvent(Connection conn, ConnectionError error)
         {
             LogHelper.ErrorF("<Client> ConnectFailedEvent with type={0}, ip={1}, port={2}, err={3}",
-                conn.InitParam.connType.ToString(), conn.InitParam.IP, conn.InitParam.Port, error.ToString());
+                conn.InitParam.connType.ToString(), conn.InitParam.Addr, conn.InitParam.Port, error.ToString());
         }
 
         // step_3: 定义 接受消息委托
@@ -46,7 +44,7 @@ namespace Public.Net
 
             string ip = "127.0.0.1";
             int port = 17000;
-            ConnectionType connType = ConnectionType.TCP;
+            ConnectionType connType = ConnectionType.Tcp;
             // --------- 测试准备工作. 忽略 End---------
 
             // step_4: 创建连接
@@ -74,10 +72,10 @@ namespace Public.Net
             TcpListener listener = new TcpListener(ip, 17000);
             listener.Start(); // 开始监听
             LogHelper.InfoF("<Server> Start Listening ...");
+            Socket s = listener.AcceptSocket();
+            byte[] binData = new byte[80];
             while (true)
             {
-                Socket s = listener.AcceptSocket();
-                byte[] binData = new byte[80];
                 int n = s.Receive(binData); //接受连接请求的字节流
                 LogHelper.DebugF("<Server> Recv Msg, length={0}", n);
                 // 原封不动发送回去

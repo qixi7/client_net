@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace Public.Net.RDP
+namespace NetModule.RDP
 {
 	public static class Crc32
 	{

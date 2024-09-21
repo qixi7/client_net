@@ -1,87 +1,71 @@
-using Public.Net.Codec;
-using Public.Net.KCP;
+using System;
+using System.Collections.Generic;
+using NetModule.Kcp;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Net;
-using System.Net.Security;
 using System.Net.Sockets;
-using System.Security.Authentication;
-using System.Security.Cryptography.X509Certificates;
 using System.Threading;
-using Public.Log;
-using Public.Net.RDP;
+using Google.Protobuf;
+using NetModule.Log;
+using NetModule.RDP;
 
-namespace Public.Net
+namespace NetModule
 {
     public class Connection
     {
-        private const int CompressThreshold = 128; // 压缩阈值, 低于该值不用压缩
-
+        // 时钟
         private static readonly Stopwatch Clock;
 
-        private Pool _codecBufferPool;
-
+        // socket
         private Socket _socket;
-
         private System.IO.Stream _stream;
 
+        // 连接、收发线程 & 收发队列
         private NetQueue _sendChan;
-
         private NetQueue _recvChan;
-
         private volatile Thread _sendThread;
-
         private volatile Thread _recvThread;
-
         private volatile Thread _connThread;
 
+        // 连接状态 & 网络回调事件
         private volatile ConnectionState _connState;
-
         public ConnectHandler ConnectedEvent;
-
         public ConnectErrorHandler ConnectErrorEvent;
-
         public RecvMsgHandler RecvMsgEvent;
 
+        // 心跳相关
         private volatile Timer _heartTickTimer;
-
         private volatile int _heartOnTheAir;
+        private long _lastSeen; // 最近一次收到服务器消息时间
+        private long _rtt;  // RTT
 
-        private long _lastSeen; // for optimize heart.
-
+        // error
         private volatile ConnectionError _lastError;
-
         private volatile System.Exception _lastThreadException;
+        private long _connectStartTime; // 连接发起时间
 
-        private long _connectStartTime;
-
+        // 网络协议
         private ProtocolReader _reader;
-
         private ProtocolWriter _writer;
+        private GameProtocol _marshaler;
+        
+        // buf
+        private byte[] _recvBuf;
 
-        private long _rtt;
-
+        // 数据统计
+        public NetStatistics _netStat;
+        
+        public static bool HeartDebugLog = false;
+        
         public ConnectionParam InitParam { get; }
 
-        public double RTT
-        {
-            get
-            {
-                long num = Interlocked.Read(ref _rtt);
-                if (num < 0L)
-                {
-                    return  num;
-                }
-
-                return (double) num / (double) Stopwatch.Frequency * 1000.0;
-            }
-        }
-
+        public double RTT => Interlocked.Read(ref _rtt);
+        
         public long LastSeen => Interlocked.Read(ref _lastSeen);
 
         public System.Exception LastThreadException => _lastThreadException;
-
-        public ICodec Codec { private get; set; }
 
         static Connection()
         {
@@ -91,15 +75,11 @@ namespace Public.Net
         public Connection(ConnectionParam param)
         {
             InitParam = param;
-            _sendChan = new NetQueue(16777216);
-            _recvChan = new NetQueue(16777216);
+            _sendChan = new NetQueue(16 * 1024 * 1024);
+            _recvChan = new NetQueue(16 * 1024 * 1024);
             _connState = ConnectionState.Undefined;
-            _codecBufferPool = new Pool(InitParam.MaxPackSize, 16);
-        }
-
-        public static long GetClockMS()
-        {
-            return Clock.ElapsedMilliseconds;
+            _marshaler = new GameProtocol();
+            _netStat = new NetStatistics();
         }
 
         public static long Now()
@@ -130,7 +110,7 @@ namespace Public.Net
             _heartTickTimer = new Timer(delegate
             {
                 Timer heartTickTimer = _heartTickTimer;
-                if (heartTickTimer == null)
+                if (heartTickTimer == null || _lastError != ConnectionError.None)
                 {
                     return;
                 }
@@ -143,13 +123,20 @@ namespace Public.Net
                 try
                 {
                     long heartTimeDiff = NowMillis() - LastSeen;
-                    if (heartTimeDiff > (long) InitParam.HeartTickTimeout)
+                    if (HeartDebugLog)
                     {
+                        LogHelper.InfoF("Will WriteHeart nowMs={0}, LastSeen={1}, heartTimeDiff={2}",
+                            NowMillis(), LastSeen, heartTimeDiff);
+                    }
+                    if (heartTimeDiff > InitParam.HeartTickTimeout)
+                    {
+                        LogHelper.InfoF("heartTimeout! nowMs={0}, LastSeen={1}, heartTimeDiff={2}",
+                        NowMillis(), LastSeen, heartTimeDiff);
                         _lastError = ConnectionError.HeartTimeout;
                     }
                     else if (InitParam.LazyHeartbeat)
                     {
-                        if (heartTimeDiff > (long) InitParam.HeartTickTime)
+                        if (heartTimeDiff > InitParam.HeartTickTime)
                         {
                             WriteHeart();
                         }
@@ -218,8 +205,9 @@ namespace Public.Net
                             ConnectedEvent(this);
                         }
                     }
-                    else if (_connectStartTime + (long) InitParam.connectTimeout < NowMillis())
+                    else if (_connectStartTime + InitParam.ConnectTimeout < NowMillis())
                     {
+                        LogHelper.WarnF("RunConnect Timeout!");
                         ConnectError(ConnectionError.ConnectFailed);
                     }
 
@@ -241,15 +229,12 @@ namespace Public.Net
             }
         }
 
-        public void SendData(GameNetPack pack)
-        {
-            if (_connState != ConnectionState.Connected)
-            {
+        public void SendData(GameNetPack pack) {
+            if (_connState != ConnectionState.Connected) {
                 throw new System.InvalidOperationException();
             }
 
-            if (pack.GetByteSize() > InitParam.MaxPackSize)
-            {
+            if (pack.GetByteSize() > ConnectionParam.MaxPackSize) {
                 LogHelper.ErrorF("SendDataFail! PackSize = {0}, SendPoolSize = {1}",
                     pack.GetByteSize(),
                     _sendChan.ByteSize);
@@ -257,22 +242,20 @@ namespace Public.Net
                 return;
             }
 
-            if (pack.body == null)
-            {
+            if (pack.body == null) {
                 throw new System.ArgumentNullException();
             }
 
-            if (!_sendChan.TryPush(pack))
-            {
+            if (!_sendChan.TryPush(pack)) {
                 ConnectError(ConnectionError.WriteBufferError);
             }
         }
 
         // force push to send queue
-        public void Flush()
-        {
-            _sendChan.Push(default);
-        }
+        // public void Flush()
+        // {
+        //     _sendChan.Push(default);
+        // }
 
         private void RecvData()
         {
@@ -293,28 +276,45 @@ namespace Public.Net
 
         private void WriteHeart()
         {
-            GameNetPack gameNetPack = new GameNetPack
+            try
             {
-                msgID = InitParam.heartMsgID,
-                body = new byte[8]
-            };
-            BigEndian.PutBytes(Slice<byte>.Make(gameNetPack.body), (ulong) Now());
-            object writer = _writer;
-            lock (writer)
-            {
-                GameProtocol.WritePack(ref gameNetPack, _writer);
-                if (InitParam.AutoFlush)
+                var gameNetPack = new GameNetPack
                 {
-                    _writer.Flush();
+                    msgID = (ushort)InitParam.HeartMsgID,
+                    body = new Heartbeat{ TimestampMs = NowMillis() }.ToByteArray(),
+                };
+                object writer = _writer;
+                lock (writer)
+                {
+                    _marshaler.WritePack(ref gameNetPack, _writer);
+                    if (InitParam.AutoFlush)
+                    {
+                        _writer.Flush();
+                    }
+                    if (HeartDebugLog)
+                    {
+                        LogHelper.InfoF("WriteHeart once! Now={0}", NowMillis());
+                    }
                 }
+            }
+            catch (Exception e)
+            {
+                LogHelper.ErrorF("WriteHeart err={0}", e);
+                _lastError = ConnectionError.SendBroken;
             }
         }
 
         private void ReadHeart(ref GameNetPack pack)
         {
-            long time = (long) BigEndian.ToUInt64(Slice<byte>.Make(pack.body));
-            Interlocked.Exchange(ref _rtt, Now() - time);
+            var heart = new Heartbeat();
+            heart.MergeFrom(pack.body);
+            
+            Interlocked.Exchange(ref _rtt, NowMillis() - heart.TimestampMs);
             Interlocked.Exchange(ref _heartOnTheAir, 0);
+            if (HeartDebugLog)
+            {
+                LogHelper.InfoF("Recv HeartOnce! NowMs={0}", NowMillis());
+            }
         }
 
         private void RunConnect()
@@ -328,11 +328,12 @@ namespace Public.Net
                 if (ex.GetBaseException() is ThreadAbortException)
                 {
                     Thread.ResetAbort();
+                    LogHelper.WarnF("RunConnect ThreadAbort err={0}", ex);
                     _lastError = ConnectionError.ConnectFailed;
                 }
                 else
                 {
-                    LogHelper.ErrorF("err={0}", ex);
+                    LogHelper.WarnF("RunConnect err={0}", ex);
                     _lastError = ConnectionError.ConnectFailed;
                 }
             }
@@ -340,138 +341,91 @@ namespace Public.Net
 
         private void ConnectInternal()
         {
-            _socket = InitParam.connType != ConnectionType.TCP
+            _socket = InitParam.connType != ConnectionType.Tcp
                 ? new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
                 : new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+
+            bool isDataMode = InitParam.connType == ConnectionType.Rdp;
 
             _socket.Connect(InitParam.RemoteEndPoint);
             switch (InitParam.connType)
             {
-                case ConnectionType.TCP:
+                case ConnectionType.Tcp:
                     _stream = new NetworkStream(_socket, true);
                     break;
-                case ConnectionType.KCP:
+                case ConnectionType.Kcp:
                     _stream = new KcpStream(_socket, true);
                     break;
-                case ConnectionType.RDP:
-                    RdpStream baseStream = new RdpStream(_socket, true)
-                    {
-                        WriteTimeout = InitParam.HeartTickTimeout
-                    };
-                    _stream = new DatagramStream(baseStream, InitParam.MaxSplitPackSize, 1200);
+                case ConnectionType.Rdp:
+                    _stream = new RdpStream(_socket, true);
                     break;
                 default:
                     throw new InvalidEnumArgumentException("UnKnown ConnectionType");
             }
 
-            if ((InitParam.connType == ConnectionType.TCP || InitParam.connType == ConnectionType.KCP) &&
-                InitParam.secure)
-            {
-                X509Certificate2 cert = new X509Certificate2(Certificate.Default);
-                // 暂时为了省事, 直接比较证书二进制内容
-                SslStream sslStream = new SslStream(_stream, false,
-                    (object sender, System.Security.Cryptography.X509Certificates.X509Certificate c, X509Chain chain,
-                        SslPolicyErrors sslPolicyErrors) => c.Equals(cert));
-                sslStream.AuthenticateAsClient("ignored", new X509CertificateCollection
-                {
-                    cert
-                }, SslProtocols.Tls, false);
-                if (!sslStream.IsAuthenticated)
-                {
-                    throw new AuthenticationException("认证失败");
-                }
-
-                if (!sslStream.IsEncrypted)
-                {
-                    throw new AuthenticationException("连接未加密");
-                }
-
-                if (!sslStream.IsSigned)
-                {
-                    throw new AuthenticationException("连接未签名");
-                }
-
-                _stream = sslStream;
-            }
-
-            _reader = new ProtocolReader(_stream, false);
-            _writer = new ProtocolWriter(_stream, false);
+            _reader = new ProtocolReader(_stream, isDataMode);
+            _writer = new ProtocolWriter(_stream, isDataMode);
         }
 
         private void RunSend()
         {
-            do
-            {
-                try
-                {
+            do {
+                try {
                     GameNetPack gameNetPack = _sendChan.Pop();
-                    do
-                    {
-                        if (gameNetPack.body == null)
-                        {
+                    do {
+                        if (gameNetPack.body == null) {
                             object writer = _writer;
-                            lock (writer)
-                            {
+                            lock (writer) {
                                 _writer.Flush();
                             }
                         }
-                        else
-                        {
-                            EncodePack(ref gameNetPack);
-                            object writer2 = _writer;
-                            int num;
-                            lock (writer2)
-                            {
-                                num = GameProtocol.WritePack(ref gameNetPack, _writer);
+                        else {
+                            object writer = _writer;
+                            int sendSize;
+                            lock (writer) {
+                                sendSize = _marshaler.WritePack(ref gameNetPack, _writer);
                             }
-
-                            NetStatistics.OnSend((long) num);
+                            _netStat.OnSend(sendSize);
                         }
                     } while (_sendChan.TryPop(ref gameNetPack));
 
-                    if (InitParam.AutoFlush)
-                    {
-                        object writer3 = _writer;
-                        lock (writer3)
-                        {
+                    if (InitParam.AutoFlush) {
+                        object writer = _writer;
+                        lock (writer) {
                             _writer.Flush();
                         }
                     }
                 }
-                catch (System.Exception ex)
-                {
+                catch (System.Exception ex) {
                     System.Exception baseException = ex.GetBaseException();
-                    if (baseException is ThreadAbortException)
-                    {
+                    if (baseException is ThreadAbortException) {
                         Thread.ResetAbort();
+                        _lastError = ConnectionError.SendThreadAbort;
                         break;
                     }
 
-                    if (baseException is ThreadInterruptedException)
-                    {
+                    if (baseException is ThreadInterruptedException) {
+                        _lastError = ConnectionError.SendThreadInterrupted;
                         break;
                     }
 
-                    if (ex is System.IO.IOException)
-                    {
-                        _lastError = ConnectionError.ServerClose;
+                    if (ex is System.IO.IOException) {
+                        _lastError = ConnectionError.SendBroken;
                         break;
                     }
 
-                    if (ex is ProtocolViolationException)
-                    {
+                    if (ex is ProtocolViolationException) {
                         _lastError = ConnectionError.ProtocolViolation;
                         break;
                     }
 
-                    if (_connState == ConnectionState.Closed)
-                    {
+                    if (_connState == ConnectionState.Closed) {
                         break;
                     }
 
                     _lastError = ConnectionError.WorkThreadException;
                     _lastThreadException = ex;
-                    LogHelper.ErrorF("RunSend err={0}", ex);
+                    LogHelper.WarnF("RunSend err={0}", ex);
                     break;
                 }
             } while (_sendThread != null);
@@ -485,15 +439,14 @@ namespace Public.Net
                 try
                 {
                     object reader = _reader;
-                    int num;
+                    int recvSize;
                     lock (reader)
                     {
-                        num = GameProtocol.ReadPack(_reader, ref pack);
+                        recvSize = _marshaler.ReadPack(_reader, ref pack);
                     }
 
-                    DecodePack(ref pack);
-                    // todo. check Whether heart pack or not
-                    if (pack.msgID == InitParam.heartMsgID)
+                    // check Whether heart pack or not
+                    if (pack.msgID == InitParam.HeartMsgID)
                     {
                         ReadHeart(ref pack);
                     }
@@ -502,7 +455,7 @@ namespace Public.Net
                         _recvChan.Push(pack);
                     }
 
-                    NetStatistics.OnReceive((long) num);
+                    _netStat.OnReceive(recvSize);
                     Interlocked.Exchange(ref _lastSeen, NowMillis());
                 }
                 catch (System.Exception ex)
@@ -510,18 +463,19 @@ namespace Public.Net
                     System.Exception baseException = ex.GetBaseException();
                     if (baseException is ThreadAbortException)
                     {
-                        Thread.ResetAbort();
+                        _lastError = ConnectionError.RecvThreadAbort;
                         break;
                     }
 
                     if (baseException is ThreadInterruptedException)
                     {
+                        _lastError = ConnectionError.RecvThreadInterrupted;
                         break;
                     }
 
                     if (ex is System.IO.IOException)
                     {
-                        _lastError = ConnectionError.ServerClose;
+                        _lastError = ConnectionError.RecvBroken;
                         break;
                     }
 
@@ -538,7 +492,7 @@ namespace Public.Net
 
                     _lastError = ConnectionError.WorkThreadException;
                     _lastThreadException = ex;
-                    LogHelper.ErrorF("RunReceive, error={0}", ex);
+                    LogHelper.WarnF("RunReceive, err={0}", ex);
                     break;
                 }
             } while (_recvThread != null);
@@ -593,67 +547,23 @@ namespace Public.Net
                     _stream.Close();
                 }
 
-                else if (_socket != null && _socket.Connected)
+                if (_socket != null && _socket.Connected)
                 {
                     _socket.Shutdown(SocketShutdown.Both);
-                    _socket.Close();
                 }
             }
             catch (System.Exception message)
             {
                 LogHelper.WarnF("CloseInternal get Exception, err={0}", message);
             }
-
-            _stream = null;
-            _socket = null;
-        }
-
-        private void EncodePack(ref GameNetPack pack)
-        {
-            if (Codec == null) return;
-            if (pack.body.Length <= CompressThreshold) return;
-            var buf = Pools.Get(pack.body.Length);
-            try
-            {
-                var n = Codec.Encode(pack.body, buf);
-                if (n <= 0) return;
-                pack.body = null; // early dereference
-                var b = new byte[n];
-                System.Array.Copy(buf, b, n);
-                pack.flag |= (byte) GameNetPackFlag.Compressed;
-                pack.body = b;
-            }
             finally
             {
-                Pools.Put(buf);
-            }
-        }
-
-        private void DecodePack(ref GameNetPack pack)
-        {
-            if ((pack.flag & (byte) GameNetPackFlag.Compressed) == 0) return;
-            if (Codec != null)
-            {
-                var buf = _codecBufferPool.Get();
-                try
+                if (_socket != null)
                 {
-                    var n = Codec.Decode(pack.body, buf);
-                    pack.body = new byte[n];
-                    System.Array.Copy(buf, pack.body, n);
+                    _socket.Close();
+                    _socket = null;
                 }
-                catch (System.Exception ex)
-                {
-                    LogHelper.ErrorF("cannot decompress packet: {0}", ex.Message);
-                    throw;
-                }
-                finally
-                {
-                    _codecBufferPool.Put(buf);
-                }
-            }
-            else
-            {
-                LogHelper.ErrorF("received a compressed packet but codec is not set");
+                _stream = null;
             }
         }
     }

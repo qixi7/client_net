@@ -1,4 +1,4 @@
-namespace Public.Net.RDP
+namespace NetModule.RDP
 {
 	internal class Queue : ISendQueue, IRecvQueue
 	{
@@ -9,11 +9,13 @@ namespace Public.Net.RDP
 		private uint _seq;
 
 		private readonly uint _size;
+		private readonly string _queueType;
 
-		public Queue(uint size)
+		public Queue(uint size, string queueType)
 		{
 			_size = size;
 			_packets = new Packet[size];
+			_queueType = queueType;
 		}
 
 		public bool Get(uint offset, ref PacketLoad load)
@@ -36,6 +38,27 @@ namespace Public.Net.RDP
 			}
 			return result;
 		}
+        
+        public bool GetSeqPacket(uint targetSeq, ref PacketLoad load)
+        {
+            object mutex = _mutex;
+            bool result;
+            lock (mutex)
+            {
+                uint seq = targetSeq;
+                Packet packet = _packets[seq % _size];
+                if (!packet.Known || packet.Load.Seq != seq)
+                {
+                    result = false;
+                }
+                else
+                {
+                    load = packet.Load;
+                    result = true;
+                }
+            }
+            return result;
+        }
 
 		public void Clear(uint seq)
 		{
@@ -55,13 +78,15 @@ namespace Public.Net.RDP
 				return false;
 			}
 			packet.Known = false;
+            long tmpRtt = -1;
 			if (w != null)
-			{
-				w.Append(Connection.Now() - packet.Load.Timestamp);
+            {
+                tmpRtt = Connection.NowMillis() - packet.Load.Timestamp;
+				w.Append(tmpRtt);
 			}
 			packet.Load.Free();
 			_packets[index] = packet;
-			// RdpStream._RdpSendRecvLog("Ack Send Seq={0}", seq);
+			RdpStream._RdpAckLog("ClearInternal Seq={0}, RTT={1}", seq, tmpRtt);
 			return true;
 		}
 
@@ -80,11 +105,14 @@ namespace Public.Net.RDP
 				packet.Known = true;
 				_packets[index] = packet;
 			}
+			RdpStream._RdpQueLog("({0}) Write queue load.Seq={1}",
+				_queueType, load.Seq);
 			return true;
 		}
 
 		public int Ack(uint ack, uint ackBits, Window w)
 		{
+			RdpStream._RdpAckLog("Recv ack={0}, ackBits={1}", ack, ackBits);
 			object mutex = _mutex;
 			int ackNum = 0;
 			lock (mutex)
@@ -126,8 +154,8 @@ namespace Public.Net.RDP
 				if (load.Seq - _seq > _size)
 				{
 					result = false;
-					RdpStream._RdpQueLog("Set load err _seq={0}. load.Seq={1}, _size={2}",
-						_seq, load.Seq, _size);
+					RdpStream._RdpQueLog("({0}) Set load err _seq={1}. load.Seq={2}, _size={3}",
+						_queueType, _seq, load.Seq, _size);
 				}
 				else
 				{
@@ -136,16 +164,16 @@ namespace Public.Net.RDP
 					if (packet.Known)
 					{
 						result = false;
-						RdpStream._RdpQueLog("Set load err _seq={0}. load.Seq={1}, packet.Known. packet.Seq={2}",
-							_seq, load.Seq, packet.Load.Seq);
+						RdpStream._RdpQueLog("({0}) Set load err _seq={1}. load.Seq={2}, packet.Known. packet.Seq={3}",
+							_queueType, _seq, load.Seq, packet.Load.Seq);
 						if (load.Seq == _seq)
 						{
 							// 这个包更重要! 替换掉
 							packet.Load = load;
 							_packets[(int)index] = packet;
 							result = true;
-							RdpStream._RdpQueLog("Set Replace load ok _seq={0}. load.Seq={1}",
-								_seq, load.Seq);
+							RdpStream._RdpQueLog("({0}) Set Replace load ok _seq={1}. load.Seq={2}",
+								_queueType, _seq, load.Seq);
 						}
 					}
 					else
@@ -154,8 +182,8 @@ namespace Public.Net.RDP
 						packet.Known = true;
 						_packets[(int)index] = packet;
 						result = true;
-						RdpStream._RdpQueLog("Set load ok _seq={0}. load.Seq={1}",
-							_seq, load.Seq);
+						RdpStream._RdpQueLog("({0}) Set load ok _seq={1}. load.Seq={2}",
+							_queueType, _seq, load.Seq);
 					}
 				}
 			}
@@ -175,12 +203,15 @@ namespace Public.Net.RDP
 					result = false;
 					if (packet.Load.Seq != 0)
 					{
-						RdpStream._RdpQueLog("Read queue err! _seq={0}, Known={1}, packet.seq={2}",
-							_seq, packet.Known, packet.Load.Seq);						
+						RdpStream._RdpQueLog("({0}) Read queue err! _seq={1}, Known={2}, packet.seq={3}",
+							_queueType, _seq, packet.Known, packet.Load.Seq);						
 					}
 				}
 				else
 				{
+					RdpStream._RdpQueLog("({0}) Read queue _seq={1}, load.Seq={2}",
+						_queueType, _seq, packet.Load.Seq);
+					
 					packet.Known = false;
 					load = packet.Load;
 					packet.Load = default;

@@ -1,0 +1,18 @@
+syntax = "proto3";
+option csharp_namespace = "NetModule";
+
+// C# gen:  protoc --proto_path=. --csharp_out=.  NetModule.proto
+
+/*
+    --------- 消息ID枚举 ---------
+*/
+
+enum NetModule {
+    MSG_None = 0;           // 占坑, proto3 规定
+    MSG_HeartBeat = 1;      // 心跳消息
+}
+
+// 心跳
+message Heartbeat {
+    int64 timestamp_ms = 1;
+}

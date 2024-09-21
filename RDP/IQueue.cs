@@ -1,4 +1,4 @@
-namespace Public.Net.RDP
+namespace NetModule.RDP
 {
 	internal interface IRecvQueue
 	{
@@ -11,9 +11,9 @@ namespace Public.Net.RDP
 	
 	internal interface ISendQueue
 	{
-		void Clear(uint seq);
-
 		bool Get(uint offset, ref PacketLoad load);
+		
+        bool GetSeqPacket(uint targetSeq, ref PacketLoad load);
 
 		bool Write(PacketLoad load);
 

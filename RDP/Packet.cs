@@ -1,4 +1,4 @@
-namespace Public.Net.RDP
+namespace NetModule.RDP
 {
     internal enum PacketKind : byte
     {
@@ -39,7 +39,11 @@ namespace Public.Net.RDP
             {
                 data.Set(6, 1);
             }
-            return Overhead + Buffer.CopyTo(data.Cut(Overhead));
+
+            var bufLen = Buffer.CopyTo(data.Cut(Overhead));
+            RdpStream._RdpPackLog("WriteTo size={0}, buffer.len={1}, Seq={2}",
+                Size, bufLen, Seq);
+            return Overhead + bufLen;
         }
 
         public int ReadFrom(Slice<byte> data)
@@ -58,8 +62,8 @@ namespace Public.Net.RDP
 
             Buffer = Buffer.Cut(0, Size);
             data.Cut(Overhead).CopyTo(Buffer);
-            RdpStream._RdpDebugLog("ReadFrom size={0}, buffer.len={1}, Seq={2}",
-                Size, Buffer.Length, Size);
+            RdpStream._RdpPackLog("ReadFrom size={0}, buffer.len={1}, Seq={2}",
+                Size, Buffer.Length, Seq);
             return Overhead + Size;
         }
 

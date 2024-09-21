@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 
-namespace Public.Net
+namespace NetModule
 {
 	public sealed class NetQueue : IDisposable
 	{
@@ -18,13 +18,13 @@ namespace Public.Net
 
 		private volatile bool _interrupted;
 
-		private bool disposedValue;
+		private bool _disposedValue;
 
 		public int Count
 		{
 			get
 			{
-				if (disposedValue)
+				if (_disposedValue)
 				{
 					throw new ObjectDisposedException("NetQueue");
 				}
@@ -42,7 +42,7 @@ namespace Public.Net
 		{
 			get
 			{
-				if (disposedValue)
+				if (_disposedValue)
 				{
 					throw new ObjectDisposedException("NetQueue");
 				}
@@ -70,7 +70,7 @@ namespace Public.Net
 
 		public GameNetPack Pop()
 		{
-			if (disposedValue)
+			if (_disposedValue)
 			{
 				throw new ObjectDisposedException("NetQueue");
 			}
@@ -88,7 +88,7 @@ namespace Public.Net
 
 		public bool TryPop(ref GameNetPack pack)
 		{
-			if (disposedValue)
+			if (_disposedValue)
 			{
 				throw new ObjectDisposedException("NetQueue");
 			}
@@ -105,7 +105,7 @@ namespace Public.Net
 					return false;
 				}
 				pack = _queue.Dequeue();
-				_size -= pack.GetByteSize();
+				_size = _size - pack.GetByteSize();
 			}
 			_spaceAvailable.Set();
 			return true;
@@ -113,7 +113,7 @@ namespace Public.Net
 
 		public void Push(GameNetPack pack)
 		{
-			if (disposedValue)
+			if (_disposedValue)
 			{
 				throw new ObjectDisposedException("NetQueue");
 			}
@@ -129,7 +129,7 @@ namespace Public.Net
 
 		public bool TryPush(GameNetPack pack)
 		{
-			if (disposedValue)
+			if (_disposedValue)
 			{
 				throw new ObjectDisposedException("NetQueue");
 			}
@@ -141,13 +141,13 @@ namespace Public.Net
 			object queue = _queue;
 			lock (queue)
 			{
-				int num = _size + node.GetByteSize();
-				if (num > _maxSize)
+				int finalSize = _size + node.GetByteSize();
+				if (finalSize > _maxSize)
 				{
 					return false;
 				}
 				_queue.Enqueue(node);
-				_size = num;
+				_size = finalSize;
 			}
 			_dataAvailable.Set();
 			return true;
@@ -155,7 +155,7 @@ namespace Public.Net
 
 		public void Clear()
 		{
-			if (disposedValue)
+			if (_disposedValue)
 			{
 				throw new ObjectDisposedException("NetQueue");
 			}
@@ -168,7 +168,7 @@ namespace Public.Net
 
 		private void Dispose(bool disposing)
 		{
-			if (!disposedValue)
+			if (!_disposedValue)
 			{
 				if (disposing)
 				{
@@ -176,7 +176,7 @@ namespace Public.Net
 					_spaceAvailable.Close();
 				}
 				_queue = null;
-				disposedValue = true;
+				_disposedValue = true;
 			}
 		}
 

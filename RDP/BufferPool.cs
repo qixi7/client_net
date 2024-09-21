@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using Public.Log;
+using NetModule.Log;
 
-namespace Public.Net.RDP
+namespace NetModule.RDP
 {
 	internal static class BufferPool
 	{

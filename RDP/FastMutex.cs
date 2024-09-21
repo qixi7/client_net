@@ -1,8 +1,8 @@
 using System;
 using System.Threading;
-using Public.Net.Log;
+using NetModule.Log;
 
-namespace Public.Net.RDP
+namespace NetModule.RDP
 {
 	public struct FastMutex
 	{

@@ -1,35 +1,28 @@
-using System;
 using System.Threading;
 
-namespace Public.Net
+namespace NetModule
 {
-	public static class NetStatistics
+	public class NetStatistics
 	{
-		private static long _send;
+		private long _send;
+		private long _receive;
+		private long _sendPackets;
+		private long _receivePackets;
 
-		private static long _receive;
-
-		private static long _sendPackets;
-
-		private static long _receivePackets;
-
-		private static volatile bool _enabled = true;
-
-		public static bool Enabled
+		private volatile bool _enabled = true;
+		public bool Enabled
 		{
 			get => _enabled;
 			set => _enabled = value;
 		}
 
-		public static long BytesSent => Interlocked.Read(ref _send);
+		// get
+		public long BytesSent => Interlocked.Read(ref _send);
+		public long PacketsSent => Interlocked.Read(ref _sendPackets);
+		public long BytesReceived => Interlocked.Read(ref _receive);
+		public long PacketsReceived => Interlocked.Read(ref _receivePackets);
 
-		public static long PacketsSent => Interlocked.Read(ref _sendPackets);
-
-		public static long BytesReceived => Interlocked.Read(ref _receive);
-
-		public static long PacketsReceived => Interlocked.Read(ref _receivePackets);
-
-		public static void Clear()
+		public void Clear()
 		{
 			Interlocked.Exchange(ref _send, 0L);
 			Interlocked.Exchange(ref _receive, 0L);
@@ -37,22 +30,16 @@ namespace Public.Net
 			Interlocked.Exchange(ref _receivePackets, 0L);
 		}
 
-		public static void OnReceive(long size)
+		public void OnReceive(long size)
 		{
-			if (!_enabled)
-			{
-				return;
-			}
+			if (!_enabled) { return; }
 			Interlocked.Add(ref _receive, size);
 			Interlocked.Increment(ref _receivePackets);
 		}
 
-		public static void OnSend(long size)
+		public void OnSend(long size)
 		{
-			if (!_enabled)
-			{
-				return;
-			}
+			if (!_enabled) { return; }
 			Interlocked.Add(ref _send, size);
 			Interlocked.Increment(ref _sendPackets);
 		}
