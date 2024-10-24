@@ -83,7 +83,7 @@ namespace NetModule.Kcp
 			}
 
 			var readCount = 0;
-			while (readCount < count)
+			while (true)
 			{
 				var onceCount = 0;
 				lock (_lock)
@@ -94,7 +94,13 @@ namespace NetModule.Kcp
 				{
 					throw new IOException();
 				}
+
 				readCount += onceCount;
+				
+				if (readCount > 0)
+				{
+					break;
+				}
 			}
 			return readCount;
 		}
